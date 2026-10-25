@@ -1,0 +1,331 @@
+#include "rtsp_forward.h"
+
+#include <cstdio>
+#include <cstring>
+#include <new>
+
+#include "core/rtsp_server.h"
+#include "util/constants.h"
+#include "log/module_log.h"
+
+// 内部服务器结构体
+struct RtspForwardInternal
+{
+    rtsp_forward::RtspServer* impl;
+};
+
+extern "C"
+{
+int rtsp_forward_create(void** server, const RtspForwardConfig* config)
+{
+    // 参数校验：server 不能为空
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+    *server = nullptr;
+
+    // 设置默认配置
+    std::string ip = rtsp_forward::kDefaultBindIp;
+    int port = rtsp_forward::kDefaultPort;
+    int max_sessions = rtsp_forward::kDefaultMaxSessions;
+    size_t buffer_size = rtsp_forward::kDefaultBufferSize;
+    const char* sdp_content = nullptr;
+    int connection_timeout_sec = rtsp_forward::kDefaultConnectionTimeoutSec;
+    int session_timeout_sec = rtsp_forward::kDefaultSessionTimeoutSec;
+
+    // 如果提供了配置，使用配置值
+    if (config != nullptr)
+    {
+        // 监听地址
+        if (config->ip != nullptr)
+        {
+            ip = config->ip;
+        }
+
+        // 端口校验：1-65535
+        if (config->port <= 0 || config->port > 65535)
+        {
+            return RTSP_INVALID_ARGUMENT;
+        }
+        port = config->port;
+
+        // 最大会话数校验：必须大于0
+        if (config->max_sessions <= 0)
+        {
+            return RTSP_INVALID_ARGUMENT;
+        }
+        max_sessions = config->max_sessions;
+
+        // 缓冲区大小校验：必须大于0
+        if (config->buffer_size == 0)
+        {
+            return RTSP_INVALID_ARGUMENT;
+        }
+        buffer_size = config->buffer_size;
+
+        // SDP内容可选
+        if (config->sdp_content != nullptr)
+        {
+            sdp_content = config->sdp_content;
+        }
+
+        // 超时配置：负数非法，0表示不超时
+        if (config->connection_timeout_sec < 0)
+        {
+            return RTSP_INVALID_ARGUMENT;
+        }
+        connection_timeout_sec = config->connection_timeout_sec;
+
+        if (config->session_timeout_sec < 0)
+        {
+            return RTSP_INVALID_ARGUMENT;
+        }
+        session_timeout_sec = config->session_timeout_sec;
+    }
+
+    RtspForwardInternal* internal = new (std::nothrow) RtspForwardInternal();
+    if (!internal)
+    {
+        return RTSP_OUT_OF_MEMORY;
+    }
+
+    // 创建内部实现
+    internal->impl = new (std::nothrow)
+        rtsp_forward::RtspServer(ip, port, max_sessions, buffer_size, connection_timeout_sec, session_timeout_sec);
+    if (!internal->impl)
+    {
+        delete internal;
+        return RTSP_OUT_OF_MEMORY;
+    }
+
+    // 设置SDP（如果提供）
+    if (sdp_content != nullptr)
+    {
+        internal->impl->SetSdp(sdp_content);
+    }
+
+    *server = internal;
+    return RTSP_OK;
+}
+
+int rtsp_forward_destroy(void* server)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (internal->impl)
+    {
+        delete internal->impl;
+    }
+    delete internal;
+
+    return RTSP_OK;
+}
+
+int rtsp_forward_start(void* server)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 检查是否已启动
+    if (internal->impl->IsRunning())
+    {
+        return RTSP_ALREADY_STARTED;
+    }
+
+    rtsp_forward::Status status = internal->impl->Start();
+    if (!status.ok())
+    {
+        // 根据内部错误码转换为对外错误码
+        switch (status.code())
+        {
+            case rtsp_forward::StatusCode::kInvalidArgument:
+                return RTSP_INVALID_ARGUMENT;
+            case rtsp_forward::StatusCode::kNetworkError:
+                return RTSP_NETWORK_ERROR;
+            default:
+                return RTSP_ERROR;
+        }
+    }
+
+    return RTSP_OK;
+}
+
+int rtsp_forward_stop(void* server)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 检查是否已停止
+    if (!internal->impl->IsRunning())
+    {
+        return RTSP_NOT_STARTED;
+    }
+
+    internal->impl->Stop();
+    return RTSP_OK;
+}
+
+int rtsp_forward_run(void* server)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 检查是否已启动
+    if (!internal->impl->IsRunning())
+    {
+        return RTSP_NOT_STARTED;
+    }
+
+    internal->impl->Run();
+    return RTSP_OK;
+}
+
+int rtsp_forward_send_rtp(void* server, const uint8_t* data, size_t len, int stream_index)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 检查是否已启动
+    if (!internal->impl->IsRunning())
+    {
+        return RTSP_NOT_STARTED;
+    }
+
+    // 数据指针校验
+    if (!data)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 数据长度校验
+    if (len == 0)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    // 流索引校验：0或1
+    if (stream_index != 0 && stream_index != 1)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    rtsp_forward::RtpPacket packet;
+    packet.data = data;
+    packet.len = len;
+    packet.stream_index = stream_index;
+
+    rtsp_forward::Status status = internal->impl->BroadcastRtp(packet);
+    if (!status.ok())
+    {
+        switch (status.code())
+        {
+            case rtsp_forward::StatusCode::kInvalidArgument:
+                return RTSP_INVALID_ARGUMENT;
+            case rtsp_forward::StatusCode::kBufferFull:
+                return RTSP_BUFFER_FULL;
+            case rtsp_forward::StatusCode::kLimitExceeded:
+                return RTSP_LIMIT_EXCEEDED;
+            case rtsp_forward::StatusCode::kFailedPrecondition:
+                return RTSP_NOT_STARTED;
+            default:
+                return RTSP_ERROR;
+        }
+    }
+
+    return RTSP_OK;
+}
+
+int rtsp_forward_set_sdp(void* server, const char* sdp)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    internal->impl->SetSdp(sdp ? sdp : "");
+    return RTSP_OK;
+}
+
+int rtsp_forward_get_info(void* server, RtspForwardInfo* info)
+{
+    // 参数校验
+    if (!server)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    if (!info)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    RtspForwardInternal* internal = static_cast<RtspForwardInternal*>(server);
+    if (!internal->impl)
+    {
+        return RTSP_INVALID_ARGUMENT;
+    }
+
+    internal->impl->GetInfo(info);
+    return RTSP_OK;
+}
+
+int rtsp_forward_get_log_module_id(void)
+{
+    return rtsp_forward::GetLogModuleId();
+}
+
+const char* rtsp_forward_version_string(void)
+{
+    return RTSP_FORWARD_VERSION_STRING " Built at " __DATE__ " " __TIME__;
+}
+
+}  // extern "C"

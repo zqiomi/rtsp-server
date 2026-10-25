@@ -1,0 +1,20 @@
+# 统一换行符，避免 Windows 检出后 shell 脚本带 CRLF 导致 WSL 里执行失败
+* text=auto eol=lf
+
+# 源码与脚本强制 LF
+*.sh    text eol=lf
+*.cc    text eol=lf
+*.h     text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+# 二进制
+*.png   binary
+*.jpg   binary
+*.h264  binary
+*.h265  binary
+*.mp4   binary
+*.a     binary
+*.so*   binary
